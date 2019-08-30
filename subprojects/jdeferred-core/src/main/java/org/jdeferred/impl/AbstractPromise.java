@@ -170,8 +170,10 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 
 	@Override
 	public Promise<D, F, P> progress(ProgressCallback<P> callback) {
-		progressCallbacks.add(callback);
-		flushTriggerProgress();
+		synchronized (this) {
+			progressCallbacks.add(callback);
+			flushTriggerProgress();
+		}
 		return this;
 	}
 
