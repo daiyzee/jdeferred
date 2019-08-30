@@ -15,6 +15,7 @@
  */
 package org.jdeferred.impl;
 
+import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -40,22 +41,23 @@ import org.slf4j.LoggerFactory;
  */
 public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 	final protected Logger log = LoggerFactory.getLogger(AbstractPromise.class);
-	
+
 	protected volatile State state = State.PENDING;
 
 	protected final List<DoneCallback<D>> doneCallbacks = new CopyOnWriteArrayList<DoneCallback<D>>();
 	protected final List<FailCallback<F>> failCallbacks = new CopyOnWriteArrayList<FailCallback<F>>();
 	protected final List<ProgressCallback<P>> progressCallbacks = new CopyOnWriteArrayList<ProgressCallback<P>>();
 	protected final List<AlwaysCallback<D, F>> alwaysCallbacks = new CopyOnWriteArrayList<AlwaysCallback<D, F>>();
-	
+
 	protected D resolveResult;
 	protected F rejectResult;
+	protected LinkedList<P> notifyResults = new LinkedList<P>();
 
 	@Override
 	public State state() {
 		return state;
 	}
-	
+
 	@Override
 	public Promise<D, F, P> done(DoneCallback<D> callback) {
 		synchronized (this) {
@@ -79,7 +81,7 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 		}
 		return this;
 	}
-	
+
 	@Override
 	public Promise<D, F, P> always(AlwaysCallback<D, F> callback) {
 		synchronized (this) {
@@ -91,7 +93,7 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 		}
 		return this;
 	}
-	
+
 	protected void triggerDone(D resolved) {
 		for (DoneCallback<D> callback : doneCallbacks) {
 			try {
@@ -102,11 +104,11 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 		}
 		doneCallbacks.clear();
 	}
-	
+
 	protected void triggerDone(DoneCallback<D> callback, D resolved) {
 		callback.onDone(resolved);
 	}
-	
+
 	protected void triggerFail(F rejected) {
 		for (FailCallback<F> callback : failCallbacks) {
 			try {
@@ -117,11 +119,22 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 		}
 		failCallbacks.clear();
 	}
-	
+
 	protected void triggerFail(FailCallback<F> callback, F rejected) {
 		callback.onFail(rejected);
 	}
-	
+
+	protected void queueTriggerProgress(P progress) {
+		notifyResults.push(progress);
+	}
+
+	protected void flushTriggerProgress() {
+		while (!notifyResults.isEmpty()) {
+			P progressResult = notifyResults.pop();
+			triggerProgress(progressResult);
+		}
+	}
+
 	protected void triggerProgress(P progress) {
 		for (ProgressCallback<P> callback : progressCallbacks) {
 			try {
@@ -131,11 +144,11 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 			}
 		}
 	}
-	
+
 	protected void triggerProgress(ProgressCallback<P> callback, P progress) {
 		callback.onProgress(progress);
 	}
-	
+
 	protected void triggerAlways(State state, D resolve, F reject) {
 		for (AlwaysCallback<D, F> callback : alwaysCallbacks) {
 			try {
@@ -145,19 +158,22 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 			}
 		}
 		alwaysCallbacks.clear();
-		
+
 		synchronized (this) {
 			this.notifyAll();
 		}
 	}
-	
+
 	protected void triggerAlways(AlwaysCallback<D, F> callback, State state, D resolve, F reject) {
 		callback.onAlways(state, resolve, reject);
 	}
 
 	@Override
 	public Promise<D, F, P> progress(ProgressCallback<P> callback) {
-		progressCallbacks.add(callback);
+		synchronized (this) {
+			progressCallbacks.add(callback);
+			flushTriggerProgress();
+		}
 		return this;
 	}
 
@@ -181,26 +197,26 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 		progress(progressCallback);
 		return this;
 	}
-	
+
 	@Override
 	public <D_OUT, F_OUT, P_OUT> Promise<D_OUT, F_OUT, P_OUT> then(
 			DoneFilter<D, D_OUT> doneFilter) {
 		return new FilteredPromise<D, F, P, D_OUT, F_OUT, P_OUT>(this, doneFilter, null, null);
 	}
-	
+
 	@Override
 	public <D_OUT, F_OUT, P_OUT> Promise<D_OUT, F_OUT, P_OUT> then(
 			DoneFilter<D, D_OUT> doneFilter, FailFilter<F, F_OUT> failFilter) {
 		return new FilteredPromise<D, F, P, D_OUT, F_OUT, P_OUT>(this, doneFilter, failFilter, null);
 	}
-	
+
 	@Override
 	public <D_OUT, F_OUT, P_OUT> Promise<D_OUT, F_OUT, P_OUT> then(
 			DoneFilter<D, D_OUT> doneFilter, FailFilter<F, F_OUT> failFilter,
 			ProgressFilter<P, P_OUT> progressFilter) {
 		return new FilteredPromise<D, F, P, D_OUT, F_OUT, P_OUT>(this, doneFilter, failFilter, progressFilter);
 	}
-	
+
 	@Override
 	public <D_OUT, F_OUT, P_OUT> Promise<D_OUT, F_OUT, P_OUT> then(
 			DonePipe<D, D_OUT, F_OUT, P_OUT> doneFilter) {
@@ -221,7 +237,7 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 			ProgressPipe<P, D_OUT, F_OUT, P_OUT> progressFilter) {
 		return new PipedPromise<D, F, P, D_OUT, F_OUT, P_OUT>(this, doneFilter, failFilter, progressFilter);
 	}
-	
+
 	@Override
 	public boolean isPending() {
 		return state == State.PENDING;
@@ -236,7 +252,7 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 	public boolean isRejected() {
 		return state == State.REJECTED;
 	}
-	
+
 	public void waitSafely() throws InterruptedException {
 		waitSafely(-1);
 	}
@@ -256,7 +272,7 @@ public abstract class AbstractPromise<D, F, P> implements Promise<D, F, P> {
 					Thread.currentThread().interrupt();
 					throw e;
 				}
-				
+
 				if (timeout > 0 && ((System.currentTimeMillis() - startTime) >= timeout)) {
 					return;
 				} else {
